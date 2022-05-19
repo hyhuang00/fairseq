@@ -25,6 +25,7 @@ else:
 try:
     # To enable Tutel MoE optimizations:
     #   python3 -m pip install --user --upgrade git+https://github.com/microsoft/tutel@v0.1.x
+    # Currently not supported
     from tutel import moe as tutel_moe
 
     has_tutel, fused_cumsum_sub_one = True, tutel_moe.fast_cumsum_sub_one
@@ -94,6 +95,7 @@ class MOELayer(Base):
         self.a2a_cpu_time_ms = 0.0
 
     def forward(self, *input: Tensor, input_padding_mask=None, **kwargs: Any) -> Tensor:
+        # HH: important function marker
         assert len(input) == 1, "only single input Tensor supported"
         input = input[0]
         assert len(input.shape) == 3, "input Tensor must have dimensions: (s)equence, (t)oken, (m)odel"
@@ -162,6 +164,7 @@ class MOELayer(Base):
             reshaped_input_padding_mask = padded_input_padding_mask
 
         if has_tutel:
+            # calculate the gating assignment and related parameters
             l_aux, self.metadata, C, E, indices_, locations_, gates_ = self.gate(reshaped_input, reshaped_input_padding_mask)
             S, M = reshaped_input.size(0), reshaped_input.size(1)
 
@@ -170,7 +173,8 @@ class MOELayer(Base):
             self._tutel_dispatcher.update(indices_, locations_, gates_, capacity=C)
             dispatched_input = self._tutel_dispatcher.encode(reshaped_input)
         else:
-            l_aux, combine_weights, dispatch_mask, self.metadata = self.gate(reshaped_input, reshaped_input_padding_mask)
+            # calculate the gating assignment and related parameters
+            l_aux, combine_weights, dispatch_mask, self.metadata, expert_assignment = self.gate(reshaped_input, reshaped_input_padding_mask)
 
             dispatch_mask = dispatch_mask.to(input.dtype).permute(1, 2, 0)  # S,E,C -> E,C,S
             E, C, S = dispatch_mask.size()
@@ -184,7 +188,12 @@ class MOELayer(Base):
 
         # Re-shape after all-to-all: ecm -> gecm
         dispatched_input = dispatched_input.reshape(self.all2all_size, self.num_local_experts, -1, d_model)
+        # Divide the dispatched chunk into multiple sets
         chunks = dispatched_input.chunk(self.num_local_experts, dim=1)
+
+        # feed each chunk to the experts and perform the calculation
+        # experts are executed sequentially, which is not very sufficient
+        # How does each device know which expert to execute?
         expert_outputs = []
         for chunk, expert in zip(chunks, self.experts):
             expert_outputs += [expert(chunk)]
@@ -209,12 +218,13 @@ class MOELayer(Base):
 
         self.record_all_to_all_stats()
 
-        return combined_output, l_aux
+        return combined_output, l_aux, expert_assignment
 
     def prepare_for_inference_(self):
         self.in_generation = True
 
     def all_to_all_wrapper(self, input: Tensor):
+        # HH: important function marker
         dummy_a2a = getattr(self.args, 'dummy_a2a', False)
         if dummy_a2a:
             input = input.contiguous()

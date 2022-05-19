@@ -306,7 +306,7 @@ def load_checkpoint_to_cpu(path, arg_overrides=None, load_on_all_ranks=False, is
     shared_path = re.sub('rank-[0-9]+', 'shared', local_path)
     if is_moe and os.path.exists(shared_path):
         expert_state = moe_checkpoint_utils.load_expert_state(local_path)  # Possibly merge experts
-        shared_state = torch_load_cpu(shared_path)
+        shared_state = torch_load_cpu(shared_path) # Load shared states separately
         state = moe_checkpoint_utils.merge_expert_and_shared_state(expert_state, shared_state)
     else:
         state = torch_load_cpu(local_path)
@@ -481,6 +481,13 @@ def load_model_ensemble_and_task(
             state = None
 
         ensemble.append(model)
+    # for i, sample in enumerate(batch_iterator):
+    #     # only perform one iteration for memory track
+    #     group = ProcessGroupTracker(group) # wrap the process group
+    #     tracker = LayerwiseMemoryTracker() # initialize memory tracker
+    #     tracker.monitor(model)
+
+
     return ensemble, cfg, task
 
 

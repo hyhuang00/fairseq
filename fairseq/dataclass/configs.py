@@ -954,6 +954,10 @@ class EvalLMConfig(FairseqDataclass):
     stats_path: Optional[str] = field(default=None, metadata={'argparse_alias': '--sp'})
     max_valid_steps: Optional[int] = field(default=None, metadata={'help': 'How many batches to evaluate',
                                                                    "argparse_alias": "--nval"})
+    experts_path: Optional[str] = field(
+        default="./experts", metadata={'help': 'location to save the expert assignment',
+                                'argparse_alias': '--ep'}
+    )
 
 
 

@@ -17,7 +17,6 @@ import sys
 from argparse import Namespace
 from textwrap import indent
 from typing import Iterable, List, Optional
-from fairseq.distributed.fully_sharded_data_parallel import fsdp_wrap, FSDP
 
 import torch
 import fairseq
@@ -33,9 +32,14 @@ from omegaconf import DictConfig
 import time
 import omegaconf
 from fairscale.experimental.tooling.layer_memory_tracker import ProcessGroupTracker, LayerwiseMemoryTracker
+from fairscale.experimental.nn.offload import OffloadModel
 import pickle as pkl
 import torch.distributed
 from fairseq.logging import meters, metrics
+import matplotlib.pyplot as plt
+import torch.profiler as profiler
+
+# from .helper import * # import my functions
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -123,35 +127,97 @@ def eval_lm(
     expert_assignments_1 = []
     expert_assignments_2 = []
 
-    # Memory trace -- HARDCODE
+    # Memory trace -- HACK and hard coded
     for model in models:
-        for i, sample in enumerate(batch_iterator):
-            # pg = model.process_group # AttributeError: 'TransformerLanguageModel' object has no attribute 'process_group'
-            rank = distributed_utils.get_data_parallel_rank()
+        rank = distributed_utils.get_data_parallel_rank()
+        if rank == 0:
             print(model)
-            # pg = torch.distributed.group.WORLD # default group
-            # pg = ProcessGroupTracker(pg) # tracking should be done when the process group was initialized
-            # fsdp_params = dict(wrapper_cls=FSDP, mixed_precision=True, flatten_parameters=True)
-            # model = FSDP(model, process_group=pg, mixed_precision=True, flatten_parameters=True)
-            logger.info(metrics.get_nvidia_smi_gpu_memory_stats_str())
-            tracker = LayerwiseMemoryTracker()
-            tracker.monitor(model)
-            sample = utils.move_to_cuda(sample, device=device)
-            model.eval()
-            print(model)
-            decoder_out = model(**sample['net_input'])
-            logger.info(metrics.get_nvidia_smi_gpu_memory_stats_str())
-            # print(tracker.memory_traces)
-            if rank == 0:
-                pkl.dump(tracker.memory_traces, open('memory_trace_1gpu.pkl', 'wb'))
-            elif rank == 1:
-                pkl.dump(tracker.memory_traces, open('memory_trace_2gpu.pkl', 'wb'))
-            elif rank == 2:
-                pkl.dump(tracker.memory_traces, open('memory_trace_3gpu.pkl', 'wb'))
-            elif rank == 3:
-                pkl.dump(tracker.memory_traces, open('memory_trace_4gpu.pkl', 'wb'))
-            if i > 1:
-                break
+        # pg = torch.distributed.group.WORLD # get default process group
+        # pg = ProcessGroupTracker(pg) # tracking should be done when the process group was initialized
+        # fsdp_params = dict(wrapper_cls=FSDP, mixed_precision=True, flatten_parameters=True)
+        # model = FSDP(model, process_group=pg, mixed_precision=True, flatten_parameters=True) # results in oom error
+        logger.info(metrics.get_nvidia_smi_gpu_memory_stats_str())
+        # Register hooks
+        tracker = LayerwiseMemoryTracker()
+        tracker.monitor(model)
+        model.eval()
+        if (isinstance(model, torch.nn.Sequential)):
+            print("MoE model is a torch sequential model")
+        else:
+            print("MoE model is not a torch sequential model")
+        model = OffloadModel(model, device=torch.device("cuda"))
+        info = []
+        # HACK to get the name
+        for module in model.modules():
+            module._has_name = False
+        for name, module in model.named_modules():
+            module._has_name = True
+            module.auto_name = name
+
+        def pre_info_hook(module:torch.nn.Module, input):
+            '''
+            A hook that records the following information:
+            time: current time when doing the forward
+            memory: current memory usage when doing the forward
+            '''
+            timestamp = time.time()
+            memory = torch.cuda.mem_get_info()
+            node = dict()
+            node['time'] = timestamp
+            node['memory'] = memory
+            # node['name'] = module._get_name()
+            if module._has_name:
+                node['name'] = module.auto_name
+            else:
+                node['name'] = module._get_name()
+            node['type'] = 'pre_forward'
+            info.append(node)
+
+        def post_info_hook(module:torch.nn.Module, input, output):
+            '''
+            A hook that records the following information:
+            time: current time when doing the forward
+            memory: current memory usage when doing the forward
+            '''
+            timestamp = time.time()
+            memory = torch.cuda.mem_get_info()
+            node = dict()
+            node['time'] = timestamp
+            node['memory'] = memory
+            node['name'] = module._get_name()
+            node['type'] = 'post_forward'
+            info.append(node)
+
+        pre_forward_handle = torch.nn.modules.module.register_module_forward_pre_hook(pre_info_hook)
+        post_forward_handle = torch.nn.modules.module.register_module_forward_hook(post_info_hook)
+        with torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
+            profile_memory=True,
+            on_trace_ready=torch.profiler.tensorboard_trace_handler('/home/home1/hh219/moenet/exploration/benchmark/time_profile/torch_trace_offload')
+        ) as p: # Torch profiler
+            for i, sample in enumerate(batch_iterator):
+                sample = utils.move_to_cuda(sample, device=device)
+                # pg = model.process_group # AttributeError: 'TransformerLanguageModel' object has no attribute 'process_group'
+                decoder_out = model(**sample['net_input'])
+                logger.info(metrics.get_nvidia_smi_gpu_memory_stats_str())
+                p.step() # Profiler step
+                if i == 10:
+                    # a total of 11 traces are recorded, of which 1 is used for warmup
+                    # and the other 10 mimic regular inference workloadd
+                    pkl.dump(tracker.memory_traces, open(f'memory_trace_gpu_{rank+1}.pkl', 'wb'))
+                    # Collect memory trace for once
+                    if rank == 0:
+                        plot = tracker.show_plots(capture=True)
+                        plt.savefig('memory_trace.png')
+                    # Record information
+                    # dump information
+                    pkl.dump(info, open(f'handle_trace_{rank+1}.pkl', 'wb'))
+                    pre_forward_handle.remove()
+                    post_forward_handle.remove()
+                    break
 
     for i, sample in enumerate(batch_iterator):
         if max_valid_steps is not None and i > max_valid_steps:

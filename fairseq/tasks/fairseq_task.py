@@ -99,7 +99,7 @@ class FairseqTask(object):
 
     @classmethod
     def build_dictionary(
-        cls, filenames, workers=1, threshold=-1, nwords=-1, padding_factor=8
+        cls, filenames, workers=1, threshold=-1, nwords=-1, padding_factor=1024
     ):
         """Build the dictionary
 

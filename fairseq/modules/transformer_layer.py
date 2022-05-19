@@ -273,14 +273,14 @@ class TransformerEncoderLayer(nn.Module):
             # x - seq_len, batch_size, model_dim
             x = x.transpose(0, 1) # batch_size, seq_len, model_dim
             if getattr(self.args, "use_moe_pad_mask", False):
-                x, l_aux = self.moe_layer(x, input_padding_mask=encoder_padding_mask)
+                x, l_aux, expert_assignment = self.moe_layer(x, input_padding_mask=encoder_padding_mask)
             else:
-                x, l_aux = self.moe_layer(x)
+                x, l_aux, expert_assignment = self.moe_layer(x)
             x = x.transpose(0, 1) # seq_len, batch_size, model_dim
         x = self.residual_connection(x, residual)
         if not self.normalize_before:
             x = self.final_layer_norm(x)
-        return x, l_aux
+        return x, l_aux, expert_assignment
 
 
 class TransformerDecoderLayer(nn.Module):
@@ -387,7 +387,7 @@ class TransformerDecoderLayer(nn.Module):
                     getattr(args, "moe_batch_prioritized_routing", False),
                 )
             experts = make_experts(args, self.embed_dim, ffn_dim, self.dropout_module)
-            self.moe_layer = MOELayer(gate, experts, args)
+            self.moe_layer = MOELayer(gate, experts, args) # This function does not construct process groups
 
 
         self.final_layer_norm = LayerNorm(self.embed_dim, export=export)
@@ -563,9 +563,9 @@ class TransformerDecoderLayer(nn.Module):
             # x - seq_len, batch_size, model_dim
             x = x.transpose(0, 1) # batch_size, seq_len, model_dim
             if getattr(self.args, "use_moe_pad_mask", False):
-                x, l_aux = self.moe_layer(x, input_padding_mask=self_attn_padding_mask)
+                x, l_aux, expert_assignment = self.moe_layer(x, input_padding_mask=self_attn_padding_mask)
             else:
-                x, l_aux = self.moe_layer(x)
+                x, l_aux, expert_assignment = self.moe_layer(x)
             x = x.transpose(0, 1) # seq_len, batch_size, model_dim
         x = self.residual_connection(x, residual)
         if not self.normalize_before:
@@ -581,8 +581,14 @@ class TransformerDecoderLayer(nn.Module):
                 ]
             else:
                 self_attn_state = [saved_state["prev_key"], saved_state["prev_value"]]
-            return x, attn, self_attn_state
-        return x, attn, None, l_aux
+            if self.is_moe_layer:
+                return x, attn, self_attn_state, expert_assignment
+            else:
+                return x, attn, self_attn_state
+        if self.is_moe_layer:
+            return x, attn, None, l_aux, expert_assignment
+        else:
+            return x, attn, None, l_aux
 
     def make_generation_fast_(self, need_attn: bool = False, **kwargs):
         self.need_attn = need_attn

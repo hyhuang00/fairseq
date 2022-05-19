@@ -14,6 +14,8 @@ import json
 
 import torch
 
+import numpy as np
+
 logger = logging.getLogger(__file__)
 
 from .fb_pathhandlers import S3PathHandler
@@ -217,6 +219,9 @@ def save_json(content, path, indent=4):
     with open(path, "w") as f:
         json.dump(content, f, indent=indent)
 
+def save_npy(content, path):
+    """Save an npy file"""
+    np.save(path, content)    
 
 def load_json(p):
     return json.load(open(p))

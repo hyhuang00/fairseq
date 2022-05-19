@@ -3,8 +3,8 @@
 # This source code is licensed under the BSD license found in the
 # LICENSE file in the root directory of this source tree.
 
-# Implementation of Top2Gating described in https://arxiv.org/pdf/2006.16668.pdf
-# Code is inspired by Top2GatingOnLogits from lingvo:
+# Implementation of Top1Gating described in https://arxiv.org/pdf/2006.16668.pdf
+# Code is inspired by Top1GatingOnLogits from lingvo:
 #   https://github.com/tensorflow/lingvo/blob/21b8106c5f1d30a196c98eedc441d4fd70833b11/lingvo/core/moe_layers.py#L477
 
 # NOTE: This is a mirror of the code in
@@ -71,7 +71,7 @@ def top1gating(
     metadata["expert1_balance_top"] = expert1_hist[:sample_count].sum()
     metadata["expert1_balance_bottom"] = expert1_hist[-sample_count:].sum()
 
-
+    expert_assignment = indices1_s.detach()
     gates1_s = (gates * mask1).sum(dim=1)
 
     # Compute locations in capacity buffer
@@ -102,9 +102,9 @@ def top1gating(
     )
     dispatch_mask = combine1_sec.bool()
     if use_fp32:
-        return l_aux, combine1_sec.to(orig_dtype), dispatch_mask, metadata
+        return l_aux, combine1_sec.to(orig_dtype), dispatch_mask, metadata, expert_assignment
     else:
-        return l_aux, combine1_sec, dispatch_mask, metadata
+        return l_aux, combine1_sec, dispatch_mask, metadata, expert_assignment
 
 
 class Top1Gate(torch.nn.Module):

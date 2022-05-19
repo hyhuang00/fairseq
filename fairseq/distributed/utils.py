@@ -23,6 +23,10 @@ import torch.distributed as dist
 from fairseq.dataclass.configs import DistributedTrainingConfig, FairseqConfig
 from omegaconf import open_dict
 
+
+# Additional packages imported
+import datetime
+
 try:
     import torch_xla.core.xla_model as xm
 except ImportError:
@@ -86,6 +90,7 @@ def _infer_slurm_init(cfg: DistributedTrainingConfig, num_pipelines_per_node):
     node_list = os.environ.get("SLURM_STEP_NODELIST")
     if node_list is None:
         node_list = os.environ.get("SLURM_JOB_NODELIST")
+    print(f'Slurm node list: {node_list}')
     if node_list is not None:
         try:
             hostnames = subprocess.check_output(
@@ -266,6 +271,7 @@ def distributed_init(cfg: FairseqConfig):
                 init_method=cfg.distributed_training.distributed_init_method,
                 world_size=cfg.distributed_training.distributed_world_size,
                 rank=cfg.distributed_training.distributed_rank,
+                timeout=datetime.timedelta(seconds=60)
             )
             logger.info(
                 "initialized host {} as rank {}".format(

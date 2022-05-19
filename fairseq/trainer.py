@@ -1369,7 +1369,7 @@ class Trainer(object):
             not torch.is_tensor(grad_norm) or torch.isfinite(grad_norm)
         ):
             metrics.log_speed("ups", 1.0, priority=100, round=2)
-            metrics.log_scalar("gnorm", grad_norm, priority=400, round=3)
+            metrics.log_scalar("gnorm", grad_norm, priority=400, round=3) # gradient norm
             if self.cfg.optimization.clip_norm > 0:
                 metrics.log_scalar(
                     "clip",

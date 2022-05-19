@@ -165,12 +165,18 @@ class MoECriterion(FairseqCriterion):
         "all_to_all_cpu_time_ms",  # CPU time spent in all to all calls in milliseconds
         "all_to_all_cuda_time_ms", # CUDA ttime spent in all to all calls in milliseconds
     ]
-    def __init__(self, task, moe_gate_loss_wt, moe_gate_loss_combine_method, moe_gate_loss_transform, sentence_avg):
+    # recording the gating output
+    moe_gating_keys = [
+        "expert1_assignment", # top1 gate calculated by the gating layer
+        "expert2_assignment", # top2 gate calculated by the gating layer
+    ]
+    def __init__(self, task, moe_gate_loss_wt, moe_gate_loss_combine_method, moe_gate_loss_transform, sentence_avg, record_gating=False):
         super().__init__(task)
         self.gate_loss_weight = moe_gate_loss_wt
         self.gate_loss_combine_method = moe_gate_loss_combine_method
         self.gate_loss_transform = moe_gate_loss_transform
         self.sentence_avg = sentence_avg
+        self.record_gating = record_gating
 
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
@@ -220,6 +226,39 @@ class MoECriterion(FairseqCriterion):
             moe_logging_output[key] = total_val / count
         moe_logging_output["batch_count"] = 1
         return moe_logging_output
+    
+    def get_moe_gate_assignment(self, model):
+        '''HH: A helper function that gets the gate assignment from the model'''
+        # Initialize
+        gate_assignment = {}
+        for key in MoECriterion.moe_gating_keys:
+            gate_assignment[key] = []
+
+        for _, module in model.named_modules():
+            if isinstance(module, MOELayer): # Only records the gate assignment from MoE layers
+                for key in MoECriterion.moe_gating_keys:
+                    gate_assignment[key].append(module.metadata[key])
+        
+        # stack assignments together
+        for key in MoECriterion.moe_gating_keys:
+            gate_assignment[key] = torch.stack(gate_assignment[key]) # Has the shape (M)odule, (S)equence, (E)xperts
+
+        return gate_assignment
+
+    @staticmethod
+    def reduce_gate_assignment(gate_assignments) -> dict[torch.Tensor]:
+        """Aggregate gating assignments from data parallel training.
+        Need a method to ensure the order of the assignment is always the same.
+        """
+        gate_sum = {}
+        for key in MoECriterion.moe_gating_keys:
+            gate_sum[key] = []
+        for assignment in gate_assignments:
+            for key in MoECriterion.moe_gating_keys:
+                gate_sum[key].append(assignment[key])
+        for key in MoECriterion.moe_gating_keys:
+            gate_sum[key] = torch.cat(gate_sum[key], dim=1) # Has the shape (M)odule, (S)equence, (E)xperts
+        return gate_sum
 
     @staticmethod
     def reduce_moe_metrics(logging_outputs) -> None:

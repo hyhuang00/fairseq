@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 def merge_expert_and_shared_state(expert_state, shared_state):
     state = {}
+    # Shared parameters are merged together
     for key in ['cfg', 'args', 'extra_state', 'optimizer_history']:
         state[key] = expert_state[key]
     state['model'] = {**expert_state['model'], **shared_state['model']}
@@ -98,7 +99,11 @@ def split_shared_and_expert_states(model, optimizer):
 
 
 def merge_multi_local_expert_states(expert_states: List[Dict]) -> Dict:
+    '''If multiple experts needs to collocate on a single device, merge their
+    dict so that they can be loaded simultaneously.
+    '''
     merged_expert_state = {}
+    # For parameters that got shared by different spaces
     for key in ['cfg', 'args', 'extra_state', 'optimizer_history']:
         merged_expert_state[key] = expert_states[0][key]
 
@@ -119,10 +124,10 @@ def merge_multi_local_expert_states(expert_states: List[Dict]) -> Dict:
         for key, val in expert_state['model'].items():
             match = re.search(r"experts.([0-9][0-9]*)", key)
             assert match is not None, "\"experts.([0-9][0-9]*)\" pattern expected in key {key}"
-            local_chkpt_expert_id = int(match.groups()[0])
+            local_chkpt_expert_id = int(match.groups()[0]) # the numbers inside the brackets are extracted
             target_expert_id = expert_group_id * num_local_experts_in_chkpt + local_chkpt_expert_id
             key = key.replace(f"experts.{local_chkpt_expert_id}", 'experts.{}'.format(target_expert_id))
-            model_state_dict[key] = val
+            model_state_dict[key] = val # Create one extra layer of dictionary, key=expert name, val = corresponding parameters
     merged_expert_state['model'] = model_state_dict
     return merged_expert_state
 
@@ -132,6 +137,7 @@ def load_expert_state(local_path):
     world_size = distributed_utils.get_data_parallel_world_size()
     rank = distributed_utils.get_data_parallel_rank()
     if world_size < checkpoint_files_count:
+        # stitching experts
         assert checkpoint_files_count % world_size == 0
         logger.info(
             f"Found total {checkpoint_files_count} expert files and"
@@ -150,6 +156,7 @@ def load_expert_state(local_path):
             expert_states.append(torch_load_cpu(fname))
         expert_state = merge_multi_local_expert_states(expert_states)
     else:
+        # load each expert separately
         expert_state = torch_load_cpu(local_path)
     return expert_state
 

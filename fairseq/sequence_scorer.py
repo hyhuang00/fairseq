@@ -19,6 +19,7 @@ class SequenceScorer(object):
         compute_alignment=False,
         eos=None,
         symbols_to_strip_from_output=None,
+        record_expert_assignment=True,
     ):
         self.pad = tgt_dict.pad()
         self.eos = tgt_dict.eos() if eos is None else eos
@@ -30,6 +31,7 @@ class SequenceScorer(object):
             if symbols_to_strip_from_output is not None
             else {self.eos}
         )
+        self.record_expert_assignment = record_expert_assignment
 
     @torch.no_grad()
     def generate(self, models, sample, **kwargs):
@@ -63,12 +65,21 @@ class SequenceScorer(object):
         # compute scores for each model in the ensemble
         avg_probs = None
         avg_attn = None
+        expert_assignments_1 = []
+        expert_assignments_2 = []
         for model in models:
             model.eval()
             decoder_out = model(**net_input)
             attn = decoder_out[1] if len(decoder_out) > 1 else None
             if type(attn) is dict:
                 attn = attn.get("attn", None)
+
+            # record the assignments
+            if self.record_expert_assignment:
+                expert_assignment_1 = decoder_out[1]['expert_assignment_1']
+                expert_assignment_2 = decoder_out[1]['expert_assignment_2']
+                expert_assignments_1.append(expert_assignment_1)
+                expert_assignments_2.append(expert_assignment_2)
 
             batched = batch_for_softmax(decoder_out, orig_target)
             probs, idx = None, 0
@@ -150,4 +161,6 @@ class SequenceScorer(object):
                     }
                 ]
             )
+        if self.record_expert_assignment:
+            return hypos, (expert_assignments_1, expert_assignments_2)
         return hypos

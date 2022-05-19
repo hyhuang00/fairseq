@@ -5,6 +5,7 @@
 
 import functools
 import math
+from optparse import Option
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -262,6 +263,8 @@ class TransformerModel(FairseqEncoderDecoderModel):
         parser.add_argument('--alternate-ffn-embed-dim', type=int, default=0,
                             help="FFN embed dim of alternate pseudo-MoE blocks")
         # fmt: on
+        # args for recording expert assignment
+        parser.add_argument('--expert-assignment', action='store_true', help="Return expert assignment")
 
     @classmethod
     def build_model(cls, args, task):
@@ -1003,6 +1006,8 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         # decoder layers
         attn: Optional[Tensor] = None
         inner_states: List[Optional[Tensor]] = [x]
+        expert_assignments_1: List[Optional[Tensor]] = []
+        expert_assignments_2: List[Optional[Tensor]] = []
         if encoder_out is None:
             l_aux = []
         else:
@@ -1013,23 +1018,44 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             else:
                 self_attn_mask = None
 
-            x, layer_attn, _, l_aux_i = layer(
-                x,
-                encoder_out["encoder_out"][0]
-                if (encoder_out is not None and len(encoder_out["encoder_out"]) > 0)
-                else None,
-                encoder_out["encoder_padding_mask"][0]
-                if (
-                    encoder_out is not None
-                    and len(encoder_out["encoder_padding_mask"]) > 0
+            if layer.is_moe_layer:
+                x, layer_attn, _, l_aux_i, expert_assignment = layer(
+                    x,
+                    encoder_out["encoder_out"][0]
+                    if (encoder_out is not None and len(encoder_out["encoder_out"]) > 0)
+                    else None,
+                    encoder_out["encoder_padding_mask"][0]
+                    if (
+                        encoder_out is not None
+                        and len(encoder_out["encoder_padding_mask"]) > 0
+                    )
+                    else None,
+                    incremental_state,
+                    self_attn_mask=self_attn_mask,
+                    self_attn_padding_mask=self_attn_padding_mask,
+                    need_attn=bool((idx == alignment_layer)),
+                    need_head_weights=bool((idx == alignment_layer)),
                 )
-                else None,
-                incremental_state,
-                self_attn_mask=self_attn_mask,
-                self_attn_padding_mask=self_attn_padding_mask,
-                need_attn=bool((idx == alignment_layer)),
-                need_head_weights=bool((idx == alignment_layer)),
-            )
+                expert_assignments_1.append(expert_assignment[0])
+                expert_assignments_2.append(expert_assignment[1])
+            else:
+                x, layer_attn, _, l_aux_i = layer(
+                    x,
+                    encoder_out["encoder_out"][0]
+                    if (encoder_out is not None and len(encoder_out["encoder_out"]) > 0)
+                    else None,
+                    encoder_out["encoder_padding_mask"][0]
+                    if (
+                        encoder_out is not None
+                        and len(encoder_out["encoder_padding_mask"]) > 0
+                    )
+                    else None,
+                    incremental_state,
+                    self_attn_mask=self_attn_mask,
+                    self_attn_padding_mask=self_attn_padding_mask,
+                    need_attn=bool((idx == alignment_layer)),
+                    need_head_weights=bool((idx == alignment_layer)),
+                )
             l_aux.append(l_aux_i)
             inner_states.append(x)
             if layer_attn is not None and idx == alignment_layer:
@@ -1051,7 +1077,10 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
 
-        return x, {"attn": [attn], "inner_states": inner_states, "l_aux": l_aux}
+        expert_assignments_1 = torch.stack(expert_assignments_1)
+        expert_assignments_2 = torch.stack(expert_assignments_2)
+        return x, {"attn": [attn], "inner_states": inner_states, "l_aux": l_aux, \
+        "expert_assignment_1": expert_assignments_1, "expert_assignment_2": expert_assignments_2}
 
     def output_layer(self, features):
         """Project features to the vocabulary size."""

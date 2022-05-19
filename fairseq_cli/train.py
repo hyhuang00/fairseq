@@ -36,6 +36,9 @@ from fairseq.model_parallel.megatron_trainer import MegatronTrainer
 from fairseq.trainer import Trainer
 from omegaconf import DictConfig, OmegaConf
 
+# additional
+from torchinfo import summary as infosum
+
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -128,6 +131,13 @@ def main(cfg: FairseqConfig) -> None:
     )
     logger.info(metrics.get_nvidia_smi_gpu_memory_stats_str())
 
+    # The following lines was used to locate the parameter on each device
+    # However, since FSDP shard all parameters into batches, it is impossible
+    # to get the device.
+    # logger.info("parameter location: \n")
+    # for name, param in model.named_parameters():
+    #     logger.info(f"{name}, {param.get_device()}")
+    
     # Load valid dataset (we load training data below, based on the latest checkpoint)
     # We load the valid dataset AFTER building the model
     data_utils.raise_if_valid_subsets_unintentionally_ignored(cfg)
@@ -298,6 +308,7 @@ def train(
     num_updates = trainer.get_num_updates()
     logger.info("Start iterating over samples")
     for i, samples in enumerate(progress):
+        # do one step
         with metrics.aggregate("train_inner"), torch.autograd.profiler.record_function(
             "train_step-%d" % i
         ):

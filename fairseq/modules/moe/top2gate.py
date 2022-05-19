@@ -27,6 +27,7 @@ SAMPLE_FRACTION = 0.2
 
 
 def gumbel_rsample(shape: Tuple, device: torch.device) -> Tensor:
+    """Generates random samples from a gumbel distribution with loc 0 and scale 1"""
     gumbel = gumbel_map.get(device)
     if gumbel is None:
         one = torch.tensor(1.0, device=device)
@@ -48,6 +49,7 @@ def one_hot(indices: torch.Tensor, num_classes: int, unsqueeze_indices=False) ->
 
 
 def entropy(probs):
+    """Calculates the entropy of a probability distribution."""
     logits = torch.distributions.utils.probs_to_logits(probs)
     p_log_p = probs * logits
     return -p_log_p.sum(-1)
@@ -73,6 +75,7 @@ def top2gating(
     # gates has shape of SE
     num_tokens = gates.shape[0]
     num_experts = gates.shape[1]
+    # behavior is different between eval and train, see README
     if moe_eval_capacity_token_fraction > 0.0 and eval_mode:
         capacity = math.ceil(moe_eval_capacity_token_fraction * num_tokens)
     else:
@@ -91,7 +94,9 @@ def top2gating(
     # Replace top-expert with min value
     logits_except1 = logits_w_noise.masked_fill(mask1.bool(), float("-inf"))
     indices2_s = torch.argmax(logits_except1, dim=1, keepdim=True)
-    mask2 = one_hot(indices2_s, num_experts)
+    mask2 = one_hot(indices2_s, num_experts) # transform gate assignment into one hot mask
+
+    # retain the weight of the top 2 gates
     gates1_s = (gates * mask1).sum(dim=1)
     gates2_s = (gates * mask2).sum(dim=1)
 
@@ -133,7 +138,7 @@ def top2gating(
         # Update 2nd's location by accounting for locations of 1st
         locations2 += torch.sum(mask1, dim=0, keepdim=True)
 
-    # Compute l_aux
+    # Compute l_aux: the auxillary loss
     me = torch.mean(gates, dim=0)
     ce = torch.mean(mask1.to(gates.dtype), dim=0)
     l_aux = torch.mean(me * ce)
@@ -165,6 +170,11 @@ def top2gating(
 
     metadata["expert2_balance_top"] = expert2_hist[:sample_count].sum()
     metadata["expert2_balance_bottom"] = expert2_hist[-sample_count:].sum()
+
+    # extra: record the expert assignment in each layer -- how to record them?
+    # metadata["expert1_assignment"] = indices1_s.detach()
+    # metadata["expert2_assignment"] = indices2_s.detach()
+    expert_assignment = [indices1_s.detach(), indices2_s.detach()]
 
     if not normalize_gate_prob_before_dropping:
         # Normalize gate probabilities
@@ -201,9 +211,9 @@ def top2gating(
     combine_weights = combine1_sec + combine2_sec
     dispatch_mask = combine_weights.bool()
     if use_fp32:
-        return l_aux, combine_weights.to(orig_dtype), dispatch_mask, metadata
+        return l_aux, combine_weights.to(orig_dtype), dispatch_mask, metadata, expert_assignment
     else:
-        return l_aux, combine_weights, dispatch_mask, metadata
+        return l_aux, combine_weights, dispatch_mask, metadata, expert_assignment
 
 
 class Top2Gate(torch.nn.Module):
